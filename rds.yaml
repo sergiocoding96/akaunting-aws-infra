@@ -1,0 +1,57 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'RDS instance for Akaunting (Free Tier)'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where the RDS instance will be launched
+  
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet ID where the RDS instance will be launched
+  
+  DBSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group ID for the RDS instance
+    
+  DBPassword:
+    Type: String
+    Description: Database admin password
+    NoEcho: true
+
+Resources:
+  AkauntingDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for Akaunting RDS
+      SubnetIds: 
+        - !Ref SubnetId
+
+  AkauntingDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: akaunting
+      Engine: mysql
+      MasterUsername: akaunting
+      MasterUserPassword: !Ref DBPassword
+      DBInstanceClass: db.t2.micro
+      AllocatedStorage: 20
+      MaxAllocatedStorage: 20
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroupId
+      DBSubnetGroupName: !Ref AkauntingDBSubnetGroup
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 7
+      MultiAZ: false
+      Tags:
+        - Key: Name
+          Value: akaunting-db
+
+Outputs:
+  DBEndpoint:
+    Description: Database endpoint
+    Value: !GetAtt AkauntingDB.Endpoint.Address
+  
+  DBPort:
+    Description: Database port
+    Value: !GetAtt AkauntingDB.Endpoint.Port
