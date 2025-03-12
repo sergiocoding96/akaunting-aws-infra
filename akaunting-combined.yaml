@@ -8,6 +8,7 @@ Parameters:
     NoEcho: true
 
 Resources:
+  # VPC Resources
   AkauntingVPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -34,7 +35,7 @@ Resources:
     Properties:
       VpcId: !Ref AkauntingVPC
       CidrBlock: 10.0.2.0/24
-      AvailabilityZone: !Select [1, !GetAZs '']
+      AvailabilityZone: !Select [0, !GetAZs '']
       Tags:
         - Key: Name
           Value: akaunting-private-subnet
@@ -74,7 +75,8 @@ Resources:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
 
-  AkauntingSecurityGroup:
+  # Security Groups
+  WebSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Security group for Akaunting EC2 instance
@@ -94,7 +96,7 @@ Resources:
           CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
-          Value: akaunting-sg
+          Value: akaunting-web-sg
 
   DBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -105,68 +107,34 @@ Resources:
         - IpProtocol: tcp
           FromPort: 3306
           ToPort: 3306
-          SourceSecurityGroupId: !Ref AkauntingSecurityGroup
+          SourceSecurityGroupId: !Ref WebSecurityGroup
       Tags:
         - Key: Name
           Value: akaunting-db-sg
 
-  AkauntingInstance:
+  # EC2 Instance
+  WebServer:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t2.micro
       ImageId: ami-0261755bbcb8c4a84
       SubnetId: !Ref PublicSubnet
       SecurityGroupIds:
-        - !Ref AkauntingSecurityGroup
+        - !Ref WebSecurityGroup
       Tags:
         - Key: Name
           Value: akaunting-server
       UserData:
-        Fn::Base64:
-          !Sub |
-            #!/bin/bash
-            yum update -y
-            yum install -y httpd
-            yum install -y php php-cli php-mysqlnd php-zip php-gd php-mbstring php-curl php-xml php-pear php-bcmath php-json
-            systemctl start httpd
-            systemctl enable httpd
-            
-            # Install Composer
-            curl -sS https://getcomposer.org/installer | php
-            mv composer.phar /usr/local/bin/composer
-            
-            # Create directory for Akaunting
-            mkdir -p /var/www/akaunting
-            cd /var/www/akaunting
-            
-            # Download and install Akaunting
-            wget https://github.com/akaunting/akaunting/releases/latest/download/Akaunting_2.1.22.zip
-            yum install -y unzip
-            unzip Akaunting_2.1.22.zip
-            rm Akaunting_2.1.22.zip
-            
-            # Set permissions
-            chown -R apache:apache /var/www/akaunting
-            chmod -R 755 /var/www/akaunting
-            
-            # Configure Apache
-            cat > /etc/httpd/conf.d/akaunting.conf << 'EOF'
-            <VirtualHost *:80>
-                DocumentRoot /var/www/akaunting
-                <Directory /var/www/akaunting>
-                    Options Indexes FollowSymLinks
-                    AllowOverride All
-                    Require all granted
-                </Directory>
-                ErrorLog /var/log/httpd/akaunting_error.log
-                CustomLog /var/log/httpd/akaunting_access.log combined
-            </VirtualHost>
-            EOF
-            
-            # Restart Apache
-            systemctl restart httpd
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "<html><body><h1>Akaunting will be installed here</h1></body></html>" > /var/www/html/index.html
 
-  AkauntingDBSubnetGroup:
+  # RDS Database
+  DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
       DBSubnetGroupDescription: Subnet group for Akaunting RDS
@@ -174,7 +142,7 @@ Resources:
         - !Ref PublicSubnet
         - !Ref PrivateSubnet
 
-  AkauntingDB:
+  Database:
     Type: AWS::RDS::DBInstance
     Properties:
       DBName: akaunting
@@ -186,27 +154,28 @@ Resources:
       AllocatedStorage: 20
       VPCSecurityGroups:
         - !GetAtt DBSecurityGroup.GroupId
-      DBSubnetGroupName: !Ref AkauntingDBSubnetGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
       PubliclyAccessible: false
       Tags:
         - Key: Name
           Value: akaunting-db
 
-  AkauntingEIP:
+  # Elastic IP
+  WebServerEIP:
     Type: AWS::EC2::EIP
     Properties:
       Domain: vpc
-      InstanceId: !Ref AkauntingInstance
+      InstanceId: !Ref WebServer
 
 Outputs:
   WebsiteURL:
     Description: Public URL of the Akaunting installation
-    Value: !Sub http://${AkauntingEIP}
+    Value: !Sub http://${WebServerEIP}
 
   DBEndpoint:
     Description: Database endpoint for configuration
-    Value: !GetAtt AkauntingDB.Endpoint.Address
+    Value: !GetAtt Database.Endpoint.Address
 
   DBPort:
     Description: Database port
-    Value: !GetAtt AkauntingDB.Endpoint.Port
+    Value: !GetAtt Database.Endpoint.Port
