@@ -1,0 +1,98 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EC2 instance for Akaunting (Free Tier)'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where the EC2 instance will be launched
+  
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet ID where the EC2 instance will be launched
+  
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group ID for the EC2 instance
+
+Resources:
+  AkauntingInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-0440d3b780d96b29d  # Amazon Linux 2023 AMI (Free tier eligible)
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: 
+        - !Ref SecurityGroupId
+      Tags:
+        - Key: Name
+          Value: akaunting-server
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd php php-cli php-fpm php-mysqlnd php-zip php-devel php-gd php-mcrypt php-mbstring php-curl php-xml php-pear php-bcmath php-json
+          systemctl start httpd
+          systemctl enable httpd
+          
+          # Install Composer
+          curl -sS https://getcomposer.org/installer | php
+          mv composer.phar /usr/local/bin/composer
+          
+          # Set up Apache and PHP
+          usermod -a -G apache ec2-user
+          chown -R ec2-user:apache /var/www
+          chmod 2775 /var/www
+          find /var/www -type d -exec chmod 2775 {} \;
+          find /var/www -type f -exec chmod 0664 {} \;
+          
+          # Create directory for Akaunting
+          mkdir -p /var/www/akaunting
+          cd /var/www/akaunting
+          
+          # Download and install Akaunting
+          wget https://github.com/akaunting/akaunting/releases/latest/download/Akaunting_2.1.22.zip
+          unzip Akaunting_2.1.22.zip
+          rm Akaunting_2.1.22.zip
+          
+          # Set permissions
+          chown -R apache:apache /var/www/akaunting
+          chmod -R 755 /var/www/akaunting
+          
+          # Configure Apache for Akaunting
+          cat > /etc/httpd/conf.d/akaunting.conf << 'EOL'
+          <VirtualHost *:80>
+              ServerAdmin webmaster@localhost
+              DocumentRoot /var/www/akaunting
+              
+              <Directory /var/www/akaunting>
+                  Options Indexes FollowSymLinks
+                  AllowOverride All
+                  Require all granted
+              </Directory>
+              
+              ErrorLog ${APACHE_LOG_DIR}/error.log
+              CustomLog ${APACHE_LOG_DIR}/access.log combined
+          </VirtualHost>
+          EOL
+          
+          # Restart Apache
+          systemctl restart httpd
+
+  AkauntingEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref AkauntingInstance
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref AkauntingInstance
+  
+  PublicIP:
+    Description: Public IP address
+    Value: !Ref AkauntingEIP
+  
+  PublicDNS:
+    Description: Public DNS name
+    Value: !GetAtt AkauntingInstance.PublicDnsName
