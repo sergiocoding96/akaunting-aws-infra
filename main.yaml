@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Main template for Akaunting deployment (Free Tier)'
+
+Parameters:
+  DBPassword:
+    Type: String
+    Description: Database admin password
+    NoEcho: true
+
+Resources:
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://raw.githubusercontent.com/sergiocoding96/akaunting-aws-infra/main/vpc.yaml
+      TimeoutInMinutes: 20
+
+  RDSStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VPCStack
+    Properties:
+      TemplateURL: https://raw.githubusercontent.com/sergiocoding96/akaunting-aws-infra/main/rds.yaml
+      Parameters:
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        SubnetId: !GetAtt VPCStack.Outputs.PrivateSubnetId
+        DBSecurityGroupId: !GetAtt VPCStack.Outputs.DBSecurityGroupId
+        DBPassword: !Ref DBPassword
+
+  EC2Stack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: RDSStack
+    Properties:
+      TemplateURL: https://raw.githubusercontent.com/sergiocoding96/akaunting-aws-infra/main/ec2.yaml
+      Parameters:
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        SubnetId: !GetAtt VPCStack.Outputs.PublicSubnetId
+        SecurityGroupId: !GetAtt VPCStack.Outputs.WebSecurityGroupId
+
+Outputs:
+  WebsiteURL:
+    Description: Public URL of the Akaunting installation
+    Value: !Sub http://${EC2Stack.Outputs.PublicDNS}
+  
+  DBEndpoint:
+    Description: Database endpoint for configuration
+    Value: !GetAtt RDSStack.Outputs.DBEndpoint
