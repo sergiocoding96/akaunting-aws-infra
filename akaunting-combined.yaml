@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Combined template for Akaunting deployment (Free Tier)'
+Description: 'Akaunting deployment (Free Tier)'
 
 Parameters:
   DBPassword:
@@ -8,7 +8,6 @@ Parameters:
     NoEcho: true
 
 Resources:
-  # VPC Resources
   AkauntingVPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -19,7 +18,7 @@ Resources:
         - Key: Name
           Value: akaunting-vpc
 
-  PublicSubnet1:
+  PublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref AkauntingVPC
@@ -30,12 +29,12 @@ Resources:
         - Key: Name
           Value: akaunting-public-subnet
 
-  PrivateSubnet1:
+  PrivateSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref AkauntingVPC
       CidrBlock: 10.0.2.0/24
-      AvailabilityZone: !Select [0, !GetAZs '']
+      AvailabilityZone: !Select [1, !GetAZs '']
       Tags:
         - Key: Name
           Value: akaunting-private-subnet
@@ -72,10 +71,9 @@ Resources:
   PublicSubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PublicSubnet1
+      SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
 
-  # Security Groups
   AkauntingSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -112,80 +110,88 @@ Resources:
         - Key: Name
           Value: akaunting-db-sg
 
-  # EC2 Instance
   AkauntingInstance:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t2.micro
-      ImageId: ami-0440d3b780d96b29d  # Amazon Linux 2023 AMI (Free tier eligible)
-      SubnetId: !Ref PublicSubnet1
-      SecurityGroupIds: 
+      ImageId: ami-0261755bbcb8c4a84
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
         - !Ref AkauntingSecurityGroup
       Tags:
         - Key: Name
           Value: akaunting-server
       UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          yum update -y
-          yum install -y httpd php php-cli php-fpm php-mysqlnd php-zip php-devel php-gd php-mcrypt php-mbstring php-curl php-xml php-pear php-bcmath php-json
-          systemctl start httpd
-          systemctl enable httpd
-          
-          # Install Composer
-          curl -sS https://getcomposer.org/installer | php
-          mv composer.phar /usr/local/bin/composer
-          
-          # Set up Apache and PHP
-          usermod -a -G apache ec2-user
-          chown -R ec2-user:apache /var/www
-          chmod 2775 /var/www
-          find /var/www -type d -exec chmod 2775 {} \;
-          find /var/www -type f -exec chmod 0664 {} \;
-          
-          # Create directory for Akaunting
-          mkdir -p /var/www/akaunting
-          cd /var/www/akaunting
-          
-          # Download and install Akaunting
-          wget https://github.com/akaunting/akaunting/releases/latest/download/Akaunting_2.1.22.zip
-          unzip Akaunting_2.1.22.zip
-          rm Akaunting_2.1.22.zip
-          
-          # Set permissions
-          chown -R apache:apache /var/www/akaunting
-          chmod -R 755 /var/www/akaunting
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y httpd
+            yum install -y php php-cli php-mysqlnd php-zip php-gd php-mbstring php-curl php-xml php-pear php-bcmath php-json
+            systemctl start httpd
+            systemctl enable httpd
+            
+            # Install Composer
+            curl -sS https://getcomposer.org/installer | php
+            mv composer.phar /usr/local/bin/composer
+            
+            # Create directory for Akaunting
+            mkdir -p /var/www/akaunting
+            cd /var/www/akaunting
+            
+            # Download and install Akaunting
+            wget https://github.com/akaunting/akaunting/releases/latest/download/Akaunting_2.1.22.zip
+            yum install -y unzip
+            unzip Akaunting_2.1.22.zip
+            rm Akaunting_2.1.22.zip
+            
+            # Set permissions
+            chown -R apache:apache /var/www/akaunting
+            chmod -R 755 /var/www/akaunting
+            
+            # Configure Apache
+            cat > /etc/httpd/conf.d/akaunting.conf << 'EOF'
+            <VirtualHost *:80>
+                DocumentRoot /var/www/akaunting
+                <Directory /var/www/akaunting>
+                    Options Indexes FollowSymLinks
+                    AllowOverride All
+                    Require all granted
+                </Directory>
+                ErrorLog /var/log/httpd/akaunting_error.log
+                CustomLog /var/log/httpd/akaunting_access.log combined
+            </VirtualHost>
+            EOF
+            
+            # Restart Apache
+            systemctl restart httpd
 
-  # RDS Database
   AkauntingDBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
       DBSubnetGroupDescription: Subnet group for Akaunting RDS
-      SubnetIds: 
-        - !Ref PrivateSubnet1
-        - !Ref PublicSubnet1
+      SubnetIds:
+        - !Ref PublicSubnet
+        - !Ref PrivateSubnet
 
   AkauntingDB:
     Type: AWS::RDS::DBInstance
     Properties:
       DBName: akaunting
       Engine: mysql
+      EngineVersion: 8.0.33
       MasterUsername: akaunting
       MasterUserPassword: !Ref DBPassword
       DBInstanceClass: db.t2.micro
       AllocatedStorage: 20
-      MaxAllocatedStorage: 20
       VPCSecurityGroups:
-        - !Ref DBSecurityGroup
+        - !GetAtt DBSecurityGroup.GroupId
       DBSubnetGroupName: !Ref AkauntingDBSubnetGroup
       PubliclyAccessible: false
-      BackupRetentionPeriod: 7
-      MultiAZ: false
       Tags:
         - Key: Name
           Value: akaunting-db
 
-  # Elastic IP for EC2
   AkauntingEIP:
     Type: AWS::EC2::EIP
     Properties:
