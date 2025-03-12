@@ -1,0 +1,27 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Simple EC2 instance template for testing'
+
+Parameters:
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t2.small
+    ConstraintDescription: Must be a valid EC2 instance type.
+
+Resources:
+  MyEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: ami-0261755bbcb8c4a84  # Amazon Linux 2 AMI
+      Tags:
+        - Key: Name
+          Value: Test-Instance
+
+Outputs:
+  InstanceId:
+    Description: The Instance ID
+    Value: !Ref MyEC2Instance
