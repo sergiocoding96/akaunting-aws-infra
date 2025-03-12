@@ -1,0 +1,206 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Combined template for Akaunting deployment (Free Tier)'
+
+Parameters:
+  DBPassword:
+    Type: String
+    Description: Database admin password
+    NoEcho: true
+
+Resources:
+  # VPC Resources
+  AkauntingVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: akaunting-vpc
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AkauntingVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: akaunting-public-subnet
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AkauntingVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: akaunting-private-subnet
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: akaunting-igw
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref AkauntingVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref AkauntingVPC
+      Tags:
+        - Key: Name
+          Value: akaunting-public-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  # Security Groups
+  AkauntingSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Akaunting EC2 instance
+      VpcId: !Ref AkauntingVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: akaunting-sg
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RDS instance
+      VpcId: !Ref AkauntingVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref AkauntingSecurityGroup
+      Tags:
+        - Key: Name
+          Value: akaunting-db-sg
+
+  # EC2 Instance
+  AkauntingInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-0440d3b780d96b29d  # Amazon Linux 2023 AMI (Free tier eligible)
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroupIds: 
+        - !Ref AkauntingSecurityGroup
+      Tags:
+        - Key: Name
+          Value: akaunting-server
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd php php-cli php-fpm php-mysqlnd php-zip php-devel php-gd php-mcrypt php-mbstring php-curl php-xml php-pear php-bcmath php-json
+          systemctl start httpd
+          systemctl enable httpd
+          
+          # Install Composer
+          curl -sS https://getcomposer.org/installer | php
+          mv composer.phar /usr/local/bin/composer
+          
+          # Set up Apache and PHP
+          usermod -a -G apache ec2-user
+          chown -R ec2-user:apache /var/www
+          chmod 2775 /var/www
+          find /var/www -type d -exec chmod 2775 {} \;
+          find /var/www -type f -exec chmod 0664 {} \;
+          
+          # Create directory for Akaunting
+          mkdir -p /var/www/akaunting
+          cd /var/www/akaunting
+          
+          # Download and install Akaunting
+          wget https://github.com/akaunting/akaunting/releases/latest/download/Akaunting_2.1.22.zip
+          unzip Akaunting_2.1.22.zip
+          rm Akaunting_2.1.22.zip
+          
+          # Set permissions
+          chown -R apache:apache /var/www/akaunting
+          chmod -R 755 /var/www/akaunting
+
+  # RDS Database
+  AkauntingDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for Akaunting RDS
+      SubnetIds: 
+        - !Ref PrivateSubnet1
+        - !Ref PublicSubnet1
+
+  AkauntingDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: akaunting
+      Engine: mysql
+      MasterUsername: akaunting
+      MasterUserPassword: !Ref DBPassword
+      DBInstanceClass: db.t2.micro
+      AllocatedStorage: 20
+      MaxAllocatedStorage: 20
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      DBSubnetGroupName: !Ref AkauntingDBSubnetGroup
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 7
+      MultiAZ: false
+      Tags:
+        - Key: Name
+          Value: akaunting-db
+
+  # Elastic IP for EC2
+  AkauntingEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref AkauntingInstance
+
+Outputs:
+  WebsiteURL:
+    Description: Public URL of the Akaunting installation
+    Value: !Sub http://${AkauntingEIP}
+
+  DBEndpoint:
+    Description: Database endpoint for configuration
+    Value: !GetAtt AkauntingDB.Endpoint.Address
+
+  DBPort:
+    Description: Database port
+    Value: !GetAtt AkauntingDB.Endpoint.Port
