@@ -1,27 +1,33 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Akaunting deployment (Free Tier)'
+Description: 'Akaunting deployment - Single server (Free Tier Compatible)'
 
 Mappings:
   RegionMap:
     us-east-1:
       AMI: ami-0261755bbcb8c4a84
     us-west-2:
-      AMI: ami-0c65adc9a5c1b5d7c
+      AMI: ami-0735c191cf914754d
     eu-west-1:
       AMI: ami-0694d931cee176e7d
-    eu-central-1:
-      AMI: ami-0f61af304b14f15fb
 
 Parameters:
   DBPassword:
     Type: String
-    Description: Database admin password
+    Description: Database root password
     NoEcho: true
-  Environment:
+    MinLength: 8
+  EnvironmentType:
     Type: String
-    Default: dev
-    AllowedValues: [dev, staging, prod]
-    Description: Environment type
+    Default: production
+    AllowedValues:
+      - development
+      - staging
+      - production
+    Description: Environment type for resource configuration
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+    ConstraintDescription: Must be the name of an existing EC2 KeyPair
 
 Resources:
   # VPC Resources
@@ -33,11 +39,9 @@ Resources:
       EnableDnsSupport: true
       Tags:
         - Key: Name
-          Value: akaunting-vpc
+          Value: !Sub akaunting-vpc-${EnvironmentType}
         - Key: Environment
-          Value: !Ref Environment
-        - Key: Project
-          Value: Akaunting
+          Value: !Ref EnvironmentType
 
   PublicSubnet:
     Type: AWS::EC2::Subnet
@@ -48,42 +52,14 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: akaunting-public-subnet
-        - Key: Environment
-          Value: !Ref Environment
-
-  PrivateSubnet1:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref AkauntingVPC
-      CidrBlock: 10.0.2.0/24
-      AvailabilityZone: !Select [0, !GetAZs '']
-      Tags:
-        - Key: Name
-          Value: akaunting-private-subnet-1
-        - Key: Environment
-          Value: !Ref Environment
-
-  PrivateSubnet2:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref AkauntingVPC
-      CidrBlock: 10.0.3.0/24
-      AvailabilityZone: !Select [1, !GetAZs '']
-      Tags:
-        - Key: Name
-          Value: akaunting-private-subnet-2
-        - Key: Environment
-          Value: !Ref Environment
+          Value: !Sub akaunting-public-subnet-${EnvironmentType}
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
         - Key: Name
-          Value: akaunting-igw
-        - Key: Environment
-          Value: !Ref Environment
+          Value: !Sub akaunting-igw-${EnvironmentType}
 
   AttachGateway:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -91,42 +67,13 @@ Resources:
       VpcId: !Ref AkauntingVPC
       InternetGatewayId: !Ref InternetGateway
 
-  NatGatewayEIP:
-    Type: AWS::EC2::EIP
-    DependsOn: AttachGateway
-    Properties:
-      Domain: vpc
-
-  NatGateway:
-    Type: AWS::EC2::NatGateway
-    Properties:
-      AllocationId: !GetAtt NatGatewayEIP.AllocationId
-      SubnetId: !Ref PublicSubnet
-      Tags:
-        - Key: Name
-          Value: akaunting-nat
-        - Key: Environment
-          Value: !Ref Environment
-
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref AkauntingVPC
       Tags:
         - Key: Name
-          Value: akaunting-public-rt
-        - Key: Environment
-          Value: !Ref Environment
-
-  PrivateRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref AkauntingVPC
-      Tags:
-        - Key: Name
-          Value: akaunting-private-rt
-        - Key: Environment
-          Value: !Ref Environment
+          Value: !Sub akaunting-public-rt-${EnvironmentType}
 
   PublicRoute:
     Type: AWS::EC2::Route
@@ -136,54 +83,11 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
-  PrivateRoute:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId: !Ref PrivateRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NatGateway
-
   PublicSubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
-
-  PrivateSubnet1RouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PrivateSubnet1
-      RouteTableId: !Ref PrivateRouteTable
-
-  PrivateSubnet2RouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PrivateSubnet2
-      RouteTableId: !Ref PrivateRouteTable
-
-  # IAM Role for EC2
-  EC2Role:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Tags:
-        - Key: Environment
-          Value: !Ref Environment
-
-  EC2InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Path: /
-      Roles:
-        - !Ref EC2Role
 
   # Security Groups
   WebSecurityGroup:
@@ -200,106 +104,116 @@ Resources:
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Name
-          Value: akaunting-web-sg
-        - Key: Environment
-          Value: !Ref Environment
-
-  DBSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for RDS instance
-      VpcId: !Ref AkauntingVPC
-      SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: 3306
-          ToPort: 3306
-          SourceSecurityGroupId: !Ref WebSecurityGroup
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
-          Value: akaunting-db-sg
-        - Key: Environment
-          Value: !Ref Environment
+          Value: !Sub akaunting-web-sg-${EnvironmentType}
+
+  # IAM Role for EC2
+  WebServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: !Sub akaunting-ec2-role-${EnvironmentType}
+
+  WebServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref WebServerRole
 
   # EC2 Instance
   WebServer:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t2.micro
-      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
       SubnetId: !Ref PublicSubnet
       SecurityGroupIds:
         - !Ref WebSecurityGroup
-      IamInstanceProfile: !Ref EC2InstanceProfile
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref WebServerInstanceProfile
       Tags:
         - Key: Name
-          Value: akaunting-server
-        - Key: Environment
-          Value: !Ref Environment
-        - Key: Project
-          Value: Akaunting
+          Value: !Sub akaunting-server-${EnvironmentType}
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash -xe
-          # Enable logging
           exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
           
           # Update system
           yum update -y
           
-          # Install required packages
-          yum install -y httpd php php-mysqlnd php-json php-gd php-mbstring php-xml php-zip unzip wget
+          # Install Apache, PHP, and MariaDB
+          amazon-linux-extras enable php7.4
+          yum clean metadata
+          yum install -y httpd mariadb-server php php-mysqlnd php-gd php-curl php-zip php-imap php-xml php-mbstring unzip wget
           
-          # Start and enable Apache
+          # Start services
           systemctl start httpd
           systemctl enable httpd
+          systemctl start mariadb
+          systemctl enable mariadb
           
-          # Download and install Akaunting
+          # Configure MariaDB with secure installation
+          mysql -e "UPDATE mysql.user SET Password=PASSWORD('${DBPassword}') WHERE User='root';"
+          mysql -e "DELETE FROM mysql.user WHERE User='';"
+          mysql -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
+          mysql -e "DROP DATABASE IF EXISTS test;"
+          mysql -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';"
+          mysql -e "FLUSH PRIVILEGES;"
+          
+          # Create database for Akaunting
+          mysql -e "CREATE DATABASE akaunting CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          mysql -e "CREATE USER 'akaunting'@'localhost' IDENTIFIED BY '${DBPassword}';"
+          mysql -e "GRANT ALL PRIVILEGES ON akaunting.* TO 'akaunting'@'localhost';"
+          mysql -e "FLUSH PRIVILEGES;"
+          
+          # Install Akaunting
           cd /var/www/html
           wget https://akaunting.com/download.php?version=latest -O akaunting.zip
           unzip akaunting.zip
+          
+          # Set permissions
           chown -R apache:apache /var/www/html
           chmod -R 755 /var/www/html
           
-          # Create installation complete marker
-          echo "Akaunting installation completed" > /var/www/html/install_complete.html
-
-  # RDS Database
-  DBSubnetGroup:
-    Type: AWS::RDS::DBSubnetGroup
-    Properties:
-      DBSubnetGroupDescription: Subnet group for Akaunting RDS
-      SubnetIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
-      Tags:
-        - Key: Environment
-          Value: !Ref Environment
-
-  Database:
-    Type: AWS::RDS::DBInstance
-    Properties:
-      DBName: akaunting
-      Engine: mysql
-      EngineVersion: 8.0.33
-      MasterUsername: akaunting
-      MasterUserPassword: !Ref DBPassword
-      DBInstanceClass: db.t2.micro
-      AllocatedStorage: 20
-      VPCSecurityGroups:
-        - !GetAtt DBSecurityGroup.GroupId
-      DBSubnetGroupName: !Ref DBSubnetGroup
-      PubliclyAccessible: false
-      BackupRetentionPeriod: 7
-      MultiAZ: false
-      Tags:
-        - Key: Name
-          Value: akaunting-db
-        - Key: Environment
-          Value: !Ref Environment
-        - Key: Project
-          Value: Akaunting
+          # Configure PHP
+          sed -i 's/memory_limit = 128M/memory_limit = 256M/' /etc/php.ini
+          
+          # Configure Apache
+          cat > /etc/httpd/conf.d/akaunting.conf << 'EOL'
+          <VirtualHost *:80>
+              DocumentRoot /var/www/html
+              <Directory /var/www/html>
+                  Options Indexes FollowSymLinks
+                  AllowOverride All
+                  Require all granted
+              </Directory>
+              ErrorLog /var/log/httpd/akaunting-error.log
+              CustomLog /var/log/httpd/akaunting-access.log combined
+          </VirtualHost>
+          EOL
+          
+          # Restart Apache to apply changes
+          systemctl restart httpd
+          
+          # Create a file to indicate completion
+          echo "Akaunting installation complete $(date)" > /var/www/html/install_complete.txt
 
   # Elastic IP
   WebServerEIP:
@@ -309,19 +223,17 @@ Resources:
       InstanceId: !Ref WebServer
       Tags:
         - Key: Name
-          Value: akaunting-eip
-        - Key: Environment
-          Value: !Ref Environment
+          Value: !Sub akaunting-eip-${EnvironmentType}
 
 Outputs:
   WebsiteURL:
     Description: Public URL of the Akaunting installation
     Value: !Sub http://${WebServerEIP}
 
-  DBEndpoint:
-    Description: Database endpoint for configuration
-    Value: !GetAtt Database.Endpoint.Address
+  SSHAccess:
+    Description: SSH access to the instance
+    Value: !Sub ssh ec2-user@${WebServerEIP}
 
-  DBPort:
-    Description: Database port
-    Value: !GetAtt Database.Endpoint.Port
+  DatabaseInfo:
+    Description: Database credentials (stored on the EC2 instance)
+    Value: "Host: localhost, DB: akaunting, User: akaunting, Password: (same as provided)"
