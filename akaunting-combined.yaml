@@ -1,11 +1,27 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'Akaunting deployment (Free Tier)'
 
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-0261755bbcb8c4a84
+    us-west-2:
+      AMI: ami-0c65adc9a5c1b5d7c
+    eu-west-1:
+      AMI: ami-0694d931cee176e7d
+    eu-central-1:
+      AMI: ami-0f61af304b14f15fb
+
 Parameters:
   DBPassword:
     Type: String
     Description: Database admin password
     NoEcho: true
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment type
 
 Resources:
   # VPC Resources
@@ -18,6 +34,10 @@ Resources:
       Tags:
         - Key: Name
           Value: akaunting-vpc
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: Akaunting
 
   PublicSubnet:
     Type: AWS::EC2::Subnet
@@ -29,8 +49,10 @@ Resources:
       Tags:
         - Key: Name
           Value: akaunting-public-subnet
+        - Key: Environment
+          Value: !Ref Environment
 
-  PrivateSubnet:
+  PrivateSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref AkauntingVPC
@@ -38,7 +60,21 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       Tags:
         - Key: Name
-          Value: akaunting-private-subnet
+          Value: akaunting-private-subnet-1
+        - Key: Environment
+          Value: !Ref Environment
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AkauntingVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: akaunting-private-subnet-2
+        - Key: Environment
+          Value: !Ref Environment
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -46,12 +82,31 @@ Resources:
       Tags:
         - Key: Name
           Value: akaunting-igw
+        - Key: Environment
+          Value: !Ref Environment
 
   AttachGateway:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref AkauntingVPC
       InternetGatewayId: !Ref InternetGateway
+
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: akaunting-nat
+        - Key: Environment
+          Value: !Ref Environment
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -60,6 +115,18 @@ Resources:
       Tags:
         - Key: Name
           Value: akaunting-public-rt
+        - Key: Environment
+          Value: !Ref Environment
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref AkauntingVPC
+      Tags:
+        - Key: Name
+          Value: akaunting-private-rt
+        - Key: Environment
+          Value: !Ref Environment
 
   PublicRoute:
     Type: AWS::EC2::Route
@@ -69,11 +136,54 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
   PublicSubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # IAM Role for EC2
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2Role
 
   # Security Groups
   WebSecurityGroup:
@@ -90,13 +200,11 @@ Resources:
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
           Value: akaunting-web-sg
+        - Key: Environment
+          Value: !Ref Environment
 
   DBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -111,27 +219,51 @@ Resources:
       Tags:
         - Key: Name
           Value: akaunting-db-sg
+        - Key: Environment
+          Value: !Ref Environment
 
   # EC2 Instance
   WebServer:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t2.micro
-      ImageId: ami-0261755bbcb8c4a84
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
       SubnetId: !Ref PublicSubnet
       SecurityGroupIds:
         - !Ref WebSecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
       Tags:
         - Key: Name
           Value: akaunting-server
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: Akaunting
       UserData:
         Fn::Base64: !Sub |
-          #!/bin/bash
+          #!/bin/bash -xe
+          # Enable logging
+          exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+          
+          # Update system
           yum update -y
-          yum install -y httpd
+          
+          # Install required packages
+          yum install -y httpd php php-mysqlnd php-json php-gd php-mbstring php-xml php-zip unzip wget
+          
+          # Start and enable Apache
           systemctl start httpd
           systemctl enable httpd
-          echo "<html><body><h1>Akaunting will be installed here</h1></body></html>" > /var/www/html/index.html
+          
+          # Download and install Akaunting
+          cd /var/www/html
+          wget https://akaunting.com/download.php?version=latest -O akaunting.zip
+          unzip akaunting.zip
+          chown -R apache:apache /var/www/html
+          chmod -R 755 /var/www/html
+          
+          # Create installation complete marker
+          echo "Akaunting installation completed" > /var/www/html/install_complete.html
 
   # RDS Database
   DBSubnetGroup:
@@ -139,8 +271,11 @@ Resources:
     Properties:
       DBSubnetGroupDescription: Subnet group for Akaunting RDS
       SubnetIds:
-        - !Ref PublicSubnet
-        - !Ref PrivateSubnet
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
 
   Database:
     Type: AWS::RDS::DBInstance
@@ -156,9 +291,15 @@ Resources:
         - !GetAtt DBSecurityGroup.GroupId
       DBSubnetGroupName: !Ref DBSubnetGroup
       PubliclyAccessible: false
+      BackupRetentionPeriod: 7
+      MultiAZ: false
       Tags:
         - Key: Name
           Value: akaunting-db
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: Akaunting
 
   # Elastic IP
   WebServerEIP:
@@ -166,6 +307,11 @@ Resources:
     Properties:
       Domain: vpc
       InstanceId: !Ref WebServer
+      Tags:
+        - Key: Name
+          Value: akaunting-eip
+        - Key: Environment
+          Value: !Ref Environment
 
 Outputs:
   WebsiteURL:
